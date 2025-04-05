@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pandas
+numpy
+opencv-python-headless
+requests
+scikit-learn
+tensorflow

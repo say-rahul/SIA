@@ -1,0 +1,4 @@
+Date,Time,Temperature,Reason,Conditions Triggered
+2025-04-05,12:20:02,18.66,Daily log - No action required,None
+2025-04-05,12:22:47,35.0,High temperature detected. No specific advice,"Baseline threshold crossed, Anomaly detected, Forecast high temp"
+2025-04-05,12:33:43,35.0,High temperature detected. No specific advice,"Baseline threshold crossed, Anomaly detected, Upward trend, Forecast high temp"
