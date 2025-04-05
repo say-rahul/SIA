@@ -1,8 +1,10 @@
 fastapi
 uvicorn
-pandas
 numpy
-opencv-python-headless
-requests
+pandas
+opencv-python
 scikit-learn
 tensorflow
+python-dotenv
+supabase
+requests
