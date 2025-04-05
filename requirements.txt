@@ -8,3 +8,4 @@ tensorflow
 python-dotenv
 supabase
 requests
+python-multipart
