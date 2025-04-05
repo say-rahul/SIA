@@ -247,15 +247,16 @@ async def analyze_field(video: UploadFile = File(...), watered: bool = Form(...)
     frequency = calculate_watering_frequency()
     print(f"Analysis complete: Temp={current_temp}, Needs Water={alert}, Reason={reason}")
     return JSONResponse({
-        "temperature": round(current_temp, 2),
-        "needs_water": alert,
-        "reason": reason,
-        "conditions_triggered": conditions,
-        "thermal_warning": thermal_warning,
-        "weather_condition": weather_condition,
-        "forecast_temperature": forecast_temp,
-        "watering_frequency": frequency
-    })
+    "temperature": float(round(current_temp, 2)),                # ensures float
+    "needs_water": bool(alert),                                  # ensures bool
+    "reason": str(reason),                                       # ensures string
+    "conditions_triggered": [str(c) for c in conditions],        # ensures list of strings
+    "thermal_warning": bool(thermal_warning),                    # ensures bool
+    "weather_condition": str(weather_condition),                 # ensures string
+    "forecast_temperature": float(forecast_temp),                # ensures float
+    "watering_frequency": int(frequency)                         # ensures integer
+})
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
