@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+numpy
+pandas
+opencv-python
+scikit-learn
+tensorflow
+python-dotenv
+supabase
+requests
