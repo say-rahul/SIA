@@ -12,13 +12,15 @@ from sklearn.preprocessing import MinMaxScaler
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense
+from supabase import create_client, Client
 
 app = FastAPI()
 
-# Constants
-HISTORY_FILE = "temperature_history.csv"
-LOG_FILE = "alert_log.csv"
-PADDY_TEMP_FILE = "paddy_temp_reference.csv"
+# Environment-based Configuration
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
 WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
 CITY = "Chengalpattu"
 COUNTRY = "Tamil Nadu"
@@ -59,11 +61,14 @@ def extract_temperature_from_thermal_video(video_path):
     return result
 
 def load_history():
-    if os.path.exists(HISTORY_FILE):
-        df = pd.read_csv(HISTORY_FILE, parse_dates=['date'])
-        print(f"Loaded history: {len(df)} records")
+    response = supabase.table("temperature_history").select("*").execute()
+    data = response.data
+    if data:
+        df = pd.DataFrame(data)
+        df['date'] = pd.to_datetime(df['date'])
+        print(f"Loaded history from Supabase: {len(df)} records")
         return df
-    print("No history file found, creating new history DataFrame")
+    print("No history in Supabase, returning empty DataFrame")
     return pd.DataFrame(columns=['date', 'temperature', 'watered'])
 
 def compute_baseline(history):
@@ -146,13 +151,8 @@ def get_weather_forecast():
         return None, None
 
 def check_paddy_temp_condition(current_temp):
-    if not os.path.exists(PADDY_TEMP_FILE):
-        print("Paddy temp reference file not found")
-        return False
-    df = pd.read_csv(PADDY_TEMP_FILE)
-    matched = df[df['needs_water_below'] <= current_temp]
-    print(f"Paddy temp condition check: {not matched.empty}")
-    return not matched.empty
+    print("Skipping paddy temp reference check (could be added via Supabase Storage)")
+    return False
 
 def is_thermal_temp_unreliable(current_temp, forecast_temp, margin=7.0):
     unreliable = forecast_temp is not None and abs(current_temp - forecast_temp) > margin
@@ -181,50 +181,52 @@ def needs_water(current_temp, watered, baseline, anomaly_model, trend_slope, for
     return False, weather_advice, conditions_triggered
 
 def log_alert(current_temp, reason, conditions_triggered, force=False):
-    log_data = {
-        'Date': datetime.now().strftime("%Y-%m-%d"),
-        'Time': datetime.now().strftime("%H:%M:%S"),
-        'Temperature': current_temp,
-        'Reason': reason,
-        'Conditions Triggered': ", ".join(conditions_triggered) if conditions_triggered else "None"
+    now = datetime.now()
+    data = {
+        "date": now.strftime("%Y-%m-%d"),
+        "time": now.strftime("%H:%M:%S"),
+        "temperature": current_temp,
+        "reason": reason,
+        "conditions_triggered": ", ".join(conditions_triggered) if conditions_triggered else "None"
     }
-    df = pd.DataFrame([log_data])
-    if not os.path.exists(LOG_FILE):
-        df.to_csv(LOG_FILE, index=False)
-    else:
-        df.to_csv(LOG_FILE, mode='a', header=False, index=False)
-    print(f"Logged alert: {log_data}")
+    supabase.table("alert_log").insert(data).execute()
+    print(f"Logged alert to Supabase: {data}")
 
 def last_log_within_24hrs():
-    if not os.path.exists(LOG_FILE):
-        return False
-    df = pd.read_csv(LOG_FILE)
-    if df.empty:
-        return False
-    last_entry = pd.to_datetime(df['Date'].iloc[-1] + ' ' + df['Time'].iloc[-1])
-    within_24hrs = datetime.now() - last_entry < timedelta(hours=24)
-    print(f"Last log within 24hrs: {within_24hrs}")
-    return within_24hrs
+    try:
+        response = supabase.table("alert_log").select("*").order("id", desc=True).limit(1).execute()
+        if response.data:
+            row = response.data[0]
+            last_entry = datetime.strptime(f"{row['date']} {row['time']}", "%Y-%m-%d %H:%M:%S")
+            within_24hrs = datetime.now() - last_entry < timedelta(hours=24)
+            print(f"Last log within 24hrs (Supabase): {within_24hrs}")
+            return within_24hrs
+    except Exception as e:
+        print(f"Error reading last log: {e}")
+    return False
 
 def calculate_watering_frequency():
-    if not os.path.exists(LOG_FILE):
-        return "No watering history available."
-    df = pd.read_csv(LOG_FILE)
-    df = df[df['Date'].notna() & (df['Date'].astype(str).str.strip() != '')]
-    if len(df) < 2:
+    response = supabase.table("alert_log").select("*").execute()
+    data = response.data
+    if not data or len(data) < 2:
         return "Not enough data to determine frequency."
-    df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-    df = df.dropna(subset=['Date'])
-    intervals = df['Date'].diff().dt.days.dropna()
-    if intervals.empty:
-        return "Not enough valid intervals to determine frequency."
-    avg_interval = round(intervals.mean())
-    next_date = df['Date'].max() + timedelta(days=avg_interval)
-    forecast_temp, _ = get_weather_forecast()
-    if forecast_temp and forecast_temp < 25:
-        next_date += timedelta(days=1)
-    print(f"Average watering interval: {avg_interval} days. Next: {next_date}")
-    return f"Water every {avg_interval} days. Next watering: {next_date.strftime('%Y-%m-%d')}"
+    df = pd.DataFrame(data)
+    try:
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+        df = df.dropna(subset=['date'])
+        intervals = df['date'].diff().dt.days.dropna()
+        if intervals.empty:
+            return "Not enough valid intervals to determine frequency."
+        avg_interval = round(intervals.mean())
+        next_date = df['date'].max() + timedelta(days=avg_interval)
+        forecast_temp, _ = get_weather_forecast()
+        if forecast_temp and forecast_temp < 25:
+            next_date += timedelta(days=1)
+        print(f"Avg interval (Supabase): {avg_interval} days. Next: {next_date}")
+        return f"Water every {avg_interval} days. Next watering: {next_date.strftime('%Y-%m-%d')}"
+    except Exception as e:
+        print(f"Error calculating watering frequency: {e}")
+        return "Error in frequency calculation."
 
 @app.post("/analyze")
 async def analyze_field(video: UploadFile = File(...), watered: bool = Form(...)):
