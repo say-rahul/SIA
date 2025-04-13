@@ -210,50 +210,62 @@ def calculate_watering_frequency():
     if not os.path.exists(LOG_FILE):
         return "No watering history available."
     df = pd.read_csv(LOG_FILE)
-    df = df[df['Date'].notna() & (df['Date'].astype(str).str.strip() != '')]
-    if len(df) < 2:
-        return "Not enough data to determine frequency."
-    df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-    df = df.dropna(subset=['Date'])
-    intervals = df['Date'].diff().dt.days.dropna()
-    if intervals.empty:
-        return "Not enough valid intervals to determine frequency."
-    avg_interval = round(intervals.mean())
-    next_date = df['Date'].max() + timedelta(days=avg_interval)
-    forecast_temp, _ = get_weather_forecast()
-    if forecast_temp and forecast_temp < 25:
-        next_date += timedelta(days=1)
-    print(f"Average watering interval: {avg_interval} days. Next: {next_date}")
-    return f"Water every {avg_interval} days. Next watering: {next_date.strftime('%Y-%m-%d')}"
+    df['Date'] = pd.to_datetime(df['Date'])
+    days_diff = (datetime.now() - df['Date']).dt.days
+    avg_interval = days_diff.mean() if not days_diff.empty else 1
+    print(f"Average watering frequency: {avg_interval} days")
+    return avg_interval
+
 
 @app.post("/analyze")
 async def analyze_field(video: UploadFile = File(...), watered: bool = Form(...)):
     with open("uploaded_video.mp4", "wb") as f:
         f.write(await video.read())
+
+    # Extract the temperature from video
     current_temp = extract_temperature_from_thermal_video("uploaded_video.mp4")
+
+    # Load historical data
     history = load_history()
+
+    # Compute baseline, trend slope, and anomaly model
     baseline = compute_baseline(history)
     trend_slope = compute_trend(history)
     anomaly_model = train_anomaly_detector(history)
+
+    # Get weather forecast and conditions
     forecast_temp, weather_condition = get_weather_forecast()
+
+    # Check for thermal unreliability
     thermal_warning = is_thermal_temp_unreliable(current_temp, forecast_temp)
+
+    # Evaluate if watering is needed
     alert, reason, conditions = needs_water(current_temp, watered, baseline, anomaly_model, trend_slope, forecast_temp, weather_condition)
+
+    # Log alert if needed
     if alert:
         log_alert(current_temp, reason, conditions)
     elif not last_log_within_24hrs():
         log_alert(current_temp, "Daily log - No action required", [], force=True)
+
+    # Calculate watering frequency
     frequency = calculate_watering_frequency()
+
     print(f"Analysis complete: Temp={current_temp}, Needs Water={alert}, Reason={reason}")
-    return JSONResponse({
+
+    # Prepare response, converting non-serializable types to serializable
+    response_data = {
         "temperature": round(current_temp, 2),
-        "needs_water": alert,
+        "needs_water": int(alert),  # Convert bool to int (True -> 1, False -> 0)
         "reason": reason,
         "conditions_triggered": conditions,
-        "thermal_warning": thermal_warning,
+        "thermal_warning": thermal_warning,  # Ensure this is a serializable value
         "weather_condition": weather_condition,
         "forecast_temperature": forecast_temp,
         "watering_frequency": frequency
-    })
+    }
+
+    return JSONResponse(content=response_data)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
