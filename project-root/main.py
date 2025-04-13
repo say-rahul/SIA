@@ -52,9 +52,9 @@ def extract_temperature_from_thermal_video(video_path):
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             avg_intensity = np.mean(gray)
             temp = TEMP_MIN + ((avg_intensity / 255.0) * (TEMP_MAX - TEMP_MIN))
-            temps.append(temp)
+            temps.append(float(temp))
     cap.release()
-    result = sum(temps) / len(temps) if temps else None
+    result = float(sum(temps) / len(temps)) if temps else None
     print(f"Extracted average temperature from video: {result}")
     return result
 
@@ -69,7 +69,7 @@ def load_history():
 def compute_baseline(history):
     if not history.empty:
         watered_temps = history[history['watered'] == True]['temperature']
-        baseline = watered_temps.mean() if not watered_temps.empty else 28.0
+        baseline = float(watered_temps.mean()) if not watered_temps.empty else 28.0
         print(f"Computed baseline from history: {baseline}")
         return baseline
     print("History is empty, default baseline: 28.0")
@@ -98,8 +98,8 @@ def compute_trend(history):
     model.compile(optimizer='adam', loss='mse')
     model.fit(X, y, epochs=10, batch_size=1, verbose=0)
     prediction = model.predict(X[-1].reshape(1, X.shape[1], X.shape[2]), verbose=0)
-    predicted_temp = scaler.inverse_transform(prediction)[0][0]
-    last_temp = df['temperature'].values[-1]
+    predicted_temp = float(scaler.inverse_transform(prediction)[0][0])
+    last_temp = float(df['temperature'].values[-1])
     trend = predicted_temp - last_temp
     print(f"Predicted temp: {predicted_temp}, Last temp: {last_temp}, Trend: {trend}")
     return trend
@@ -119,7 +119,7 @@ def is_anomalous_temperature(current_temp, model):
         return False
     prediction = model.predict(np.array([[current_temp]]))[0] == -1
     print(f"Anomaly detection result for {current_temp}: {prediction}")
-    return prediction
+    return bool(prediction)
 
 def get_weather_forecast():
     url = f"http://api.openweathermap.org/data/2.5/forecast?q={CITY},{COUNTRY}&appid={WEATHER_API_KEY}&units=metric"
@@ -134,10 +134,10 @@ def get_weather_forecast():
             if "main" in entry and "weather" in entry and entry.get("dt_txt"):
                 forecast_date = datetime.strptime(entry["dt_txt"], "%Y-%m-%d %H:%M:%S").date()
                 if forecast_date == tomorrow:
-                    temps.append(entry["main"].get("temp", 0))
+                    temps.append(float(entry["main"].get("temp", 0)))
                     if entry["weather"]:
                         conditions.append(entry["weather"][0].get("main", "Unknown"))
-        max_temp = max(temps) if temps else None
+        max_temp = float(max(temps)) if temps else None
         common_condition = max(set(conditions), key=conditions.count) if conditions else "Unknown"
         print(f"Forecast for tomorrow: Temp={max_temp}, Condition={common_condition}")
         return max_temp, common_condition
@@ -152,12 +152,12 @@ def check_paddy_temp_condition(current_temp):
     df = pd.read_csv(PADDY_TEMP_FILE)
     matched = df[df['needs_water_below'] <= current_temp]
     print(f"Paddy temp condition check: {not matched.empty}")
-    return not matched.empty
+    return bool(not matched.empty)
 
 def is_thermal_temp_unreliable(current_temp, forecast_temp, margin=7.0):
     unreliable = forecast_temp is not None and abs(current_temp - forecast_temp) > margin
     print(f"Thermal unreliability: {unreliable}")
-    return unreliable
+    return bool(unreliable)
 
 def needs_water(current_temp, watered, baseline, anomaly_model, trend_slope, forecast_temp, weather_condition):
     conditions_triggered = []
@@ -184,7 +184,7 @@ def log_alert(current_temp, reason, conditions_triggered, force=False):
     log_data = {
         'Date': datetime.now().strftime("%Y-%m-%d"),
         'Time': datetime.now().strftime("%H:%M:%S"),
-        'Temperature': current_temp,
+        'Temperature': float(current_temp),
         'Reason': reason,
         'Conditions Triggered': ", ".join(conditions_triggered) if conditions_triggered else "None"
     }
@@ -204,65 +204,49 @@ def last_log_within_24hrs():
     last_entry = pd.to_datetime(df['Date'].iloc[-1] + ' ' + df['Time'].iloc[-1])
     within_24hrs = datetime.now() - last_entry < timedelta(hours=24)
     print(f"Last log within 24hrs: {within_24hrs}")
-    return within_24hrs
+    return bool(within_24hrs)
 
 def calculate_watering_frequency():
     if not os.path.exists(LOG_FILE):
-        return "No watering history available."
+        return 0.0
     df = pd.read_csv(LOG_FILE)
     df['Date'] = pd.to_datetime(df['Date'])
     days_diff = (datetime.now() - df['Date']).dt.days
-    avg_interval = days_diff.mean() if not days_diff.empty else 1
+    avg_interval = float(days_diff.mean()) if not days_diff.empty else 0.0
     print(f"Average watering frequency: {avg_interval} days")
     return avg_interval
-
 
 @app.post("/analyze")
 async def analyze_field(video: UploadFile = File(...), watered: bool = Form(...)):
     with open("uploaded_video.mp4", "wb") as f:
         f.write(await video.read())
 
-    # Extract the temperature from video
     current_temp = extract_temperature_from_thermal_video("uploaded_video.mp4")
-
-    # Load historical data
     history = load_history()
-
-    # Compute baseline, trend slope, and anomaly model
     baseline = compute_baseline(history)
     trend_slope = compute_trend(history)
     anomaly_model = train_anomaly_detector(history)
-
-    # Get weather forecast and conditions
     forecast_temp, weather_condition = get_weather_forecast()
-
-    # Check for thermal unreliability
     thermal_warning = is_thermal_temp_unreliable(current_temp, forecast_temp)
-
-    # Evaluate if watering is needed
     alert, reason, conditions = needs_water(current_temp, watered, baseline, anomaly_model, trend_slope, forecast_temp, weather_condition)
 
-    # Log alert if needed
     if alert:
         log_alert(current_temp, reason, conditions)
     elif not last_log_within_24hrs():
         log_alert(current_temp, "Daily log - No action required", [], force=True)
 
-    # Calculate watering frequency
     frequency = calculate_watering_frequency()
-
     print(f"Analysis complete: Temp={current_temp}, Needs Water={alert}, Reason={reason}")
 
-    # Prepare response, converting non-serializable types to serializable
     response_data = {
-        "temperature": round(current_temp, 2),
-        "needs_water": int(alert),  # Convert bool to int (True -> 1, False -> 0)
+        "temperature": float(round(current_temp, 2)),
+        "needs_water": int(alert),
         "reason": reason,
         "conditions_triggered": conditions,
-        "thermal_warning": thermal_warning,  # Ensure this is a serializable value
+        "thermal_warning": bool(thermal_warning),
         "weather_condition": weather_condition,
-        "forecast_temperature": forecast_temp,
-        "watering_frequency": frequency
+        "forecast_temperature": float(forecast_temp) if forecast_temp is not None else None,
+        "watering_frequency": float(frequency)
     }
 
     return JSONResponse(content=response_data)
