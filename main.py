@@ -15,6 +15,10 @@ from tensorflow.keras.layers import LSTM, Dense
 
 app = FastAPI()
 
+@app.get("/")
+def root():
+    return {"message": "AI Smart Irrigation API is running ✅"}
+
 # Constants
 HISTORY_FILE = "temperature_history.csv"
 LOG_FILE = "alert_log.csv"
